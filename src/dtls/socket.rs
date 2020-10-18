@@ -1,4 +1,4 @@
-use openssl::ssl::SslStream;
+use openssl::ssl::{SslStream, ShutdownState};
 use std::sync::{Arc, RwLock};
 use std::io::{Write, Read};
 use futures::Poll;
@@ -12,29 +12,50 @@ pub trait DtlsSocket {
 
     fn get_socket(&self) -> UdpSocket;
 
-    fn get_channel(&self, remote_addr: SocketAddr) -> Arc<RwLock<SslStream<UdpChannel>>>;
+    fn get_channel(&self, remote_addr: SocketAddr) -> Result<Arc<RwLock<SslStream<UdpChannel>>>, std::io::Error>;
+
+    fn free_channel(&self, remote_addr: SocketAddr);
 
     fn send(&self, buf: &[u8], addr: SocketAddr) -> Result<usize, std::io::Error> {
         trace!("In send....");
-        let channel = self.get_channel(addr);
+        let channel = self.get_channel(addr).unwrap();
         channel.clone().write().unwrap().write(buf)
     }
 
     fn receive(&self, buf: &mut [u8]) -> Poll<Result<(usize, SocketAddr, Option<SocketAddr>), std::io::Error>> {
-        trace!("In receive...");
-        let mut peek_buf = [0; 10];
-        match self.get_socket().peek_from(&mut peek_buf) {
-            Ok((_, from)) => {
-                let channel = self.get_channel(from);
-                let size = channel.clone().write().unwrap().read(buf)?;
-                Poll::Ready(Ok((size, from, None)))
-            },
-            Err(e) => match e.kind() {
-                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
-                    Poll::Pending
-                }
-                _ => Poll::Ready(Err(e)),
-            },
+        loop {
+            trace!("In receive...");
+            let mut peek_buf = [0; 10];
+            match self.get_socket().peek_from(&mut peek_buf) {
+                Ok((_, from)) => {
+                    let channel: Arc<RwLock<SslStream<UdpChannel>>>;
+                    
+                    match self.get_channel(from) {
+                        Ok(ch) => channel = ch,
+                        Err(_) => continue,
+                    }
+
+                    let size = channel.clone().write().unwrap().read(buf)?;
+                    if size > 0 {
+                        trace!("Received {} bytes", size);
+                        return Poll::Ready(Ok((size, from, None)))
+                    } else {
+                        trace!("Received 0 bytes. Shutdown state: {:?}", channel.clone().write().unwrap().get_shutdown());
+                        if channel.clone().write().unwrap().get_shutdown() == ShutdownState::RECEIVED {
+                            channel.clone().write().unwrap().shutdown();
+                            self.free_channel(from);
+                        }
+                        continue;
+                    }
+                },
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => {
+                        continue;
+                        //return Poll::Pending;
+                    }
+                    _ => return Poll::Ready(Err(e)),
+                },
+            }
         }
     }
 }
@@ -94,10 +115,6 @@ macro_rules! dtls_socket {
                     B: ToSocketAddrs<SocketAddr = Self::SocketAddr, Error = Self::Error>,
             {
                 if let Some(addr) = addr.to_socket_addrs()?.next() {
-                    if log_enabled!(log::Level::Trace) {
-                        let decoded = String::from_utf8_lossy(buf);
-                        trace!("In poll_send_to {:?}: {:?}", addr, decoded);
-                    }
                     match self.send(buf, addr) {
                         Ok(written) => Poll::Ready(Ok(written)),
                         Err(e) => {

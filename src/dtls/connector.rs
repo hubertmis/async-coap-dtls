@@ -43,7 +43,7 @@ impl DtlsSocket for DtlsConnectorSocket {
         self.local_socket.try_clone().unwrap()
     }
 
-    fn get_channel(&self, remote_addr: SocketAddr) -> Arc<RwLock<SslStream<UdpChannel>>> {
+    fn get_channel(&self, remote_addr: SocketAddr) -> Result<Arc<RwLock<SslStream<UdpChannel>>>, std::io::Error> {
         trace!("Getting connector channel for {:?}", remote_addr);
         let channel = match self.streams.write().unwrap().entry(remote_addr.clone()) {
             Entry::Vacant(entry) => {
@@ -64,7 +64,11 @@ impl DtlsSocket for DtlsConnectorSocket {
             }
         };
         trace!("Got connector channel {:?}", channel);
-        channel
+        Ok(channel)
+    }
+
+    fn free_channel(&self, remote_addr: SocketAddr) {
+        // TODO
     }
 }
 

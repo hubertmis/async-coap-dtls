@@ -40,21 +40,39 @@ impl DtlsAcceptorSocket {
 impl DtlsSocket for DtlsAcceptorSocket {
 
     fn get_socket(&self) -> UdpSocket {
+        trace!("Clonning socket: {:?}", self.local_socket);
         self.local_socket.try_clone().unwrap()
     }
 
-    fn get_channel(&self, remote_addr: SocketAddr) -> Arc<RwLock<SslStream<UdpChannel>>> {
+    fn get_channel(&self, remote_addr: SocketAddr) -> Result<Arc<RwLock<SslStream<UdpChannel>>>, std::io::Error> {
         trace!("Getting acceptor channel for {:?}", remote_addr);
         match self.streams.write().unwrap().entry(remote_addr.clone()) {
             Entry::Vacant(entry) => {
+                trace!("Acceptor channel vacant");
                 let socket = self.local_socket.try_clone().unwrap();
                 let channel = UdpChannel::new(socket, remote_addr.clone());
-                let stream = Arc::new( RwLock::new(self.acceptor.accept(channel).unwrap()));
-                entry.insert(stream).clone()
+                let stream = Arc::new( RwLock::new(self.acceptor.accept(channel).map_err(
+                            |_| std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "DTLS connection refulsed"))?));
+                Ok(entry.insert(stream).clone())
             }
             // Cache hit - return value
             Entry::Occupied(entry) => {
-                entry.remove()
+                trace!("Acceptor channel occupied");
+                Ok(entry.get().clone())
+            }
+        }
+    }
+
+    fn free_channel(&self, remote_addr: SocketAddr) {
+        trace!("Freeing acceptor channel for {:?}", remote_addr);
+
+        match self.streams.write().unwrap().entry(remote_addr.clone()) {
+            Entry::Vacant(entry) => {
+                trace!("Acceptor channel vacant. Do nothing");
+            }
+            Entry::Occupied(entry) => {
+                trace!("Acceptor channel occupied. Remove it");
+                entry.remove();
             }
         }
     }

@@ -12,6 +12,10 @@ path = "src/main.rs"
 name = "coap-client"
 path = "src/client.rs"
 
+[lib]
+name = "async_coap_dtls"
+parh = "src/lib.rs"
+
 [dependencies]
 async-coap = "0.1"
 async-coap-tokio = "0.1"

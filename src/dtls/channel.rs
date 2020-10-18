@@ -54,6 +54,7 @@ impl AsyncWrite for UdpChannel {
 
 impl UdpChannel {
     pub fn new(local_socket: UdpSocket, remote_addr: SocketAddr) -> UdpChannel {
+        local_socket.set_read_timeout(Some(std::time::Duration::from_secs(1)));
 
         UdpChannel {
             local_socket,
